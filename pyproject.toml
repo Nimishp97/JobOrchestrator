@@ -1,0 +1,37 @@
+[project]
+name = "jobagent"
+version = "0.1.0"
+description = "Autonomous job-application agent: source, score, tailor, dispatch, track."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.15.0",
+    "pyyaml>=6.0.3",
+    "tzdata>=2026.5",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "jobagent"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

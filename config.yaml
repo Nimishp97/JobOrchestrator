@@ -1,0 +1,19 @@
+# Behavior config (no secrets here; secrets live in .env).
+# Unknown keys and invalid values fail fast at startup.
+
+dry_run: true          # safe default: nothing is actually sent while true
+kill_switch: false     # true halts all dispatching immediately
+score_threshold: 75    # 0-100; jobs scoring below this are not applied to
+
+caps:                  # per-day limits, 0 disables a channel
+  email_per_day: 10
+  portal_per_day: 10
+  linkedin_dm_per_day: 5
+
+quiet_hours:           # no dispatching in this window (may wrap midnight)
+  start: "22:00"
+  end: "07:00"
+  timezone: "UTC"      # IANA name, e.g. "Asia/Kolkata"
+
+llm:
+  model: "claude-sonnet-5-5"   # change here when models are deprecated
