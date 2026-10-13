@@ -124,19 +124,32 @@ def upgrade() -> None:
     )
 
     # The audit log is append-only: enforce it in the database, not just in code.
-    op.execute(
-        "CREATE TRIGGER events_no_update BEFORE UPDATE ON events "
-        "BEGIN SELECT RAISE(ABORT, 'events is append-only'); END"
-    )
-    op.execute(
-        "CREATE TRIGGER events_no_delete BEFORE DELETE ON events "
-        "BEGIN SELECT RAISE(ABORT, 'events is append-only'); END"
-    )
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            "CREATE FUNCTION events_append_only() RETURNS trigger LANGUAGE plpgsql AS "
+            "$$ BEGIN RAISE EXCEPTION 'events is append-only'; END $$"
+        )
+        for action in ("update", "delete"):
+            op.execute(
+                f"CREATE TRIGGER events_no_{action} BEFORE {action.upper()} ON events "
+                "FOR EACH ROW EXECUTE FUNCTION events_append_only()"
+            )
+        return
+    for action in ("update", "delete"):
+        op.execute(
+            f"CREATE TRIGGER events_no_{action} BEFORE {action.upper()} ON events "
+            "BEGIN SELECT RAISE(ABORT, 'events is append-only'); END"
+        )
 
 
 def downgrade() -> None:
-    op.execute("DROP TRIGGER events_no_delete")
-    op.execute("DROP TRIGGER events_no_update")
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("DROP TRIGGER events_no_delete ON events")
+        op.execute("DROP TRIGGER events_no_update ON events")
+        op.execute("DROP FUNCTION events_append_only()")
+    else:
+        op.execute("DROP TRIGGER events_no_delete")
+        op.execute("DROP TRIGGER events_no_update")
     op.drop_table("channel_state")
     op.drop_index(op.f("ix_events_entity"), table_name="events")
     op.drop_table("events")

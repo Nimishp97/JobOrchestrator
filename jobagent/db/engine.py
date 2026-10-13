@@ -1,4 +1,4 @@
-"""Engine, session factory and session scope for the SQLite database."""
+"""Engine, session factory and session scope (SQLite file by default, Postgres via URL)."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -38,6 +38,17 @@ def create_db_engine(path: Path, *, foreign_keys: bool = True) -> Engine:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
 
     return engine
+
+
+def create_postgres_engine(url: str) -> Engine:
+    """Create an engine for a Postgres URL (psycopg 3). Never log `url`: it has the password.
+
+    Server-side prepared statements are off so a transaction-mode pooler (Neon's `-pooler`
+    host) works. `pool_pre_ping` recovers connections the pooler has dropped.
+    """
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url.removeprefix("postgresql://")
+    return create_engine(url, pool_pre_ping=True, connect_args={"prepare_threshold": None})
 
 
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:

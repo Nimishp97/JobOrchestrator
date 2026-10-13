@@ -3,11 +3,13 @@
 import hashlib
 import re
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -21,6 +23,8 @@ from jobagent.db.models import (
     Event,
     Job,
     JobStatus,
+    LLMCall,
+    LLMCallStatus,
     utcnow,
 )
 
@@ -127,8 +131,9 @@ def upsert_job_if_new(
     (source, source_job_id)) atomically, so concurrent discoverers cannot create duplicates.
     """
     dedupe_key = make_dedupe_key(company, title, location)
+    insert = pg_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
     stmt = (
-        sqlite_insert(Job)
+        insert(Job)
         .values(
             source=source,
             source_job_id=source_job_id,
@@ -183,9 +188,9 @@ def claim_jobs(
 ) -> list[Job]:
     """Atomically lease up to `limit` jobs in `status` that have no live lease.
 
-    One UPDATE ... WHERE id IN (SELECT ...) RETURNING id: the select and the lease write happen in
-    a single statement, so two workers can never both receive the same row. Expired leases match
-    the predicate and are reclaimed (crash recovery).
+    One UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING id: the select and
+    the lease write happen in a single statement, so two workers never get the same row.
+    Expired leases match the predicate and are reclaimed (crash recovery).
     """
     if lease_seconds <= 0:
         raise ValueError("lease_seconds must be positive")
@@ -195,6 +200,9 @@ def claim_jobs(
         .where(Job.status == status, or_(Job.claimed_until.is_(None), Job.claimed_until < now))
         .order_by(Job.id)
         .limit(limit)
+        # Postgres: without this two workers can pick the same rows (the subquery is not re-run
+        # after a concurrent update). SQLite ignores it; its writers are already serialized.
+        .with_for_update(skip_locked=True)
     )
     claimed_ids = session.scalars(
         update(Job)
@@ -312,6 +320,77 @@ def resume_channel(
         now=now,
     )
     return True
+
+
+# --- llm calls ----------------------------------------------------------------------------
+
+
+def record_llm_call(
+    session: Session,
+    *,
+    task: str,
+    model: str,
+    prompt_version: str,
+    prompt_hash: str,
+    status: LLMCallStatus,
+    attempts: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    latency_ms: int = 0,
+    error_type: str | None = None,
+    cost_usd: Decimal | None = None,
+    job_id: int | None = None,
+    application_id: int | None = None,
+    now: datetime | None = None,
+) -> LLMCall:
+    row = LLMCall(
+        ts=now or utcnow(),
+        task=task,
+        model=model,
+        prompt_version=prompt_version,
+        prompt_hash=prompt_hash,
+        status=status,
+        attempts=attempts,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        latency_ms=latency_ms,
+        error_type=error_type,
+        cost_usd=cost_usd,
+        job_id=job_id,
+        application_id=application_id,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def llm_usage_today(session: Session, now: datetime | None = None) -> dict[str, Any]:
+    """Totals for the current UTC day over calls that actually made a request (attempts > 0).
+
+    Rows with an unknown price (cost_usd NULL) add to `calls` and tokens but not to `cost_usd`;
+    `unpriced_calls` says how many, so callers can tell the cost is a lower bound.
+    """
+    day_start = datetime.combine((now or utcnow()).astimezone(UTC).date(), time.min, tzinfo=UTC)
+    row = session.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(LLMCall.input_tokens), 0),
+            func.coalesce(func.sum(LLMCall.output_tokens), 0),
+            func.coalesce(func.sum(LLMCall.cost_usd), 0),
+            func.count().filter(LLMCall.cost_usd.is_(None)),
+        ).where(LLMCall.ts >= day_start, LLMCall.attempts > 0)
+    ).one()
+    return {
+        "calls": row[0],
+        "input_tokens": int(row[1]),
+        "output_tokens": int(row[2]),
+        "cost_usd": Decimal(str(row[3])),
+        "unpriced_calls": row[4],
+    }
 
 
 # --- reporting ----------------------------------------------------------------------------

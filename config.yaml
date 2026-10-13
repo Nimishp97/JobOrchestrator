@@ -20,3 +20,16 @@ database:
 
 llm:
   model: "claude-sonnet-5-5"   # change here when models are deprecated
+  temperature: 0               # 0 for extraction and scoring; null leaves it to the API
+  max_tokens: 2048
+  timeout_seconds: 60
+  max_validation_retries: 2    # repair attempts after invalid output
+  max_transport_attempts: 4    # total tries for 429 / 5xx / timeouts
+  backoff_base_seconds: 1.0
+  backoff_max_seconds: 30.0
+  log_payloads: false          # true writes raw prompts/responses to data/llm_debug/ (personal data!)
+  daily_budget_usd: 5.0        # UTC day; calls are refused once reached
+  max_calls_per_day: 200
+  tasks: {}                    # per-task overrides, e.g. scoring: {model: "...", max_tokens: 1024}
+  pricing:                     # USD per million tokens (platform.claude.com/docs pricing, 2026-10)
+    claude-sonnet-5-5: {input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50}

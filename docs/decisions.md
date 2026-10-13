@@ -92,3 +92,73 @@
   SQL and future bugs. They live in the migration (the one place DDL is raw SQL).
 - **Timestamps** are stored as timezone-aware UTC via a `UTCDateTime` type that rejects naive
   datetimes (SQLite itself discards tzinfo).
+
+## 008. Postgres (Neon) via `DATABASE_URL`; SQLite stays the default and the test database
+- **Decision**: if `DATABASE_URL` is set in `.env`, the app and migrations use Postgres (psycopg 3);
+  otherwise the SQLite file from `config.yaml` is used. Tests always use temp SQLite files.
+- **Why**: the URL contains a password, so it is a secret (`.env`), not behavior (`config.yaml`).
+- **Dialect work**: audit-log triggers per dialect in migration 0001; `ON CONFLICT` via the
+  matching dialect `insert`; `claim_jobs` adds `FOR UPDATE SKIP LOCKED` (Postgres re-checks
+  only the outer predicate after a concurrent update, so two workers could otherwise lease the
+  same row; SQLite ignores the clause); datetimes are bound as naive UTC so the result does not
+  depend on the session timezone.
+- **Pooler**: server-side prepared statements are disabled (`prepare_threshold=None`) for Neon's
+  transaction-mode pooler.
+- **Gap**: CI exercises SQLite only; Postgres was verified manually against Neon.
+
+## 009. Native structured outputs (`output_config.format`), not forced tool use
+- **Decision**: schema-constrained JSON via `output_config={"format": {"type": "json_schema"}}`
+  (GA, no beta header). The schema is the pydantic model's JSON schema passed through the SDK's
+  `transform_schema()`, because the API rejects constraint keywords (`minimum`, `minLength`...).
+- **Why**: grammar-constrained output with no fake tool; `stop_reason` handled identically for
+  every call. Pydantic stays the authority: constraints the API cannot enforce are still checked
+  locally, which is exactly what the validation-retry layer is for.
+- **Fallback**: forced `tool_choice` if a future model lacks support.
+- **We call `messages.create`, not `messages.parse`**, to keep the raw text for `LLMOutputError`
+  and for the repair message.
+
+## 010. Two separate retry layers; the SDK's own retries are off
+- **Decision**: transport retries (429, 5xx, timeouts, connection; backoff + jitter, honors
+  Retry-After, bounded) and validation retries (repair message with the error text, bounded by
+  `max_validation_retries`) are different code paths. `anthropic.Anthropic(max_retries=0)`.
+  Other 4xx fail fast. Truncation (`max_tokens`) is a failure with no repair retry: the same
+  limit would truncate again. A Retry-After longer than `backoff_max_seconds` fails fast rather
+  than sleeping for minutes.
+- **Why**: they fail for different reasons and need different budgets; a hidden SDK retry layer
+  would multiply ours and make `attempts` meaningless. Hand-written (about 25 lines) instead of
+  tenacity: one fewer dependency and exact control over Retry-After.
+- **`attempts`** counts requests sent (transport retries and repairs both).
+
+## 011. Prompts are versioned files; hash recorded on every call
+- **Decision**: `prompts/<task>/<version>.md` (YAML header + `## system` / `## user`). The
+  loader returns system, user, version and a sha256 over newline-normalized content plus the
+  shared safety preamble. Placeholders are `{{name}}`; missing or unexpected variables raise.
+- **Why**: any past output traces to the exact prompt. CRLF normalization keeps the hash stable
+  across Windows and Linux checkouts. `{{ }}` instead of `str.format` because prompts contain
+  JSON braces. Never edit a released version: add `v2`.
+
+## 012. Untrusted input is delimited structurally, and the model has no side effects
+- **Decision**: variables listed under `untrusted:` in a prompt header are wrapped in
+  `<name>...</name>` at render time by `wrap_untrusted`, which neutralizes any `<name` or
+  `</name` (any case/spacing) inside the text. A shared preamble, prepended to every system
+  prompt and included in the hash, states that tagged text is data, never instructions.
+- **Why**: delimiting at render time means a caller cannot forget it. This reduces injection
+  risk; it does not eliminate it, which is why model output is only ever validated data that
+  deterministic code acts on (caps, quiet hours, kill switch and state machines stay in code).
+
+## 013. One llm_calls row per call; no payloads by default; pricing in config
+- **Decision**: every `run_structured` call writes one `llm_calls` row (including failures,
+  budget blocks and kill-switch refusals), tokens summed across attempts. No prompt/response
+  text is stored. `llm.log_payloads: true` writes raw bodies to `data/llm_debug/` (gitignored)
+  for local debugging only. Prices are a per-model table in `config.yaml`; a model without an
+  entry records `cost_usd = NULL` and a warning, never a guess.
+- **Budget**: `daily_budget_usd` and `max_calls_per_day` are checked against today's UTC totals
+  before any request. Rows that made no request (`attempts = 0`) do not count toward the cap.
+  Unpriced calls count toward the call cap but not the USD total (`usage` prints a note).
+- **Limit**: check-then-call is not atomic across processes; fine for one agent process.
+
+## 014. Response caching deferred
+- **Decision**: not built in Phase 3.
+- **Why**: Phase 5 scoring is already idempotent through job status in the DB, so re-scoring an
+  unchanged job does not happen. A cache adds a table and invalidation rules; add it when there
+  is a measured repeat-call cost.

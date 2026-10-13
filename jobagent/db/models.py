@@ -1,6 +1,7 @@
 """ORM models. Status sets are closed enums stored as VARCHAR + CHECK constraint."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -11,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     MetaData,
+    Numeric,
     String,
     Text,
     TypeDecorator,
@@ -33,7 +35,7 @@ def utcnow() -> datetime:
 
 
 class UTCDateTime(TypeDecorator[datetime]):
-    """Timezone-aware UTC datetimes. SQLite drops tzinfo, so enforce it on both ends."""
+    """Timezone-aware UTC datetimes. Columns hold naive UTC; awareness is enforced at the edges."""
 
     impl = DateTime
     cache_ok = True
@@ -43,7 +45,8 @@ class UTCDateTime(TypeDecorator[datetime]):
             return None
         if value.tzinfo is None:
             raise ValueError("naive datetime; use a timezone-aware UTC datetime")
-        return value.astimezone(UTC)
+        # Naive UTC on the wire: Postgres would otherwise convert via the session timezone.
+        return value.astimezone(UTC).replace(tzinfo=None)
 
     def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
         return None if value is None else value.replace(tzinfo=UTC)
@@ -81,6 +84,14 @@ class EntityType(StrEnum):
     JOB = "job"
     APPLICATION = "application"
     CHANNEL = "channel"
+
+
+class LLMCallStatus(StrEnum):
+    OK = "ok"
+    VALIDATION_FAILED = "validation_failed"
+    TRANSPORT_FAILED = "transport_failed"
+    REFUSED = "refused"
+    BUDGET_BLOCKED = "budget_blocked"
 
 
 def _enum(cls: type[StrEnum], name: str) -> Enum:
@@ -184,3 +195,29 @@ class ChannelState(Base):
     paused: Mapped[bool] = mapped_column(default=False)
     paused_reason: Mapped[str | None] = mapped_column(Text)
     paused_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class LLMCall(Base):
+    """One row per `run_structured` call, whatever its outcome. Never holds prompt/response text."""
+
+    __tablename__ = "llm_calls"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+    task: Mapped[str] = mapped_column(String(64), index=True)
+    model: Mapped[str] = mapped_column(String(64))
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    prompt_hash: Mapped[str] = mapped_column(String(64))
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(default=0)
+    latency_ms: Mapped[int] = mapped_column(default=0)
+    attempts: Mapped[int] = mapped_column(default=0)  # 0 = blocked before any request
+    status: Mapped[LLMCallStatus] = mapped_column(_enum(LLMCallStatus, "llm_call_status"))
+    error_type: Mapped[str | None] = mapped_column(String(64))
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))  # NULL = price unknown
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL")
+    )

@@ -1,11 +1,11 @@
-"""Alembic environment: online mode only, SQLite batch mode, URL from config or caller."""
+"""Alembic environment: online mode only; Postgres URL or SQLite path from caller or config."""
 
 from pathlib import Path
 
 from alembic import context
 
 from jobagent.config import AppConfig
-from jobagent.db.engine import create_db_engine
+from jobagent.db.engine import create_db_engine, create_postgres_engine
 from jobagent.db.models import Base
 
 config = context.config
@@ -20,8 +20,12 @@ def _database_path() -> Path:
 
 
 def run_migrations_online() -> None:
-    # Batch migrations recreate tables, so foreign keys must be off while they run.
-    engine = create_db_engine(_database_path(), foreign_keys=False)
+    url = config.attributes.get("db_url")
+    if url:
+        engine = create_postgres_engine(url)
+    else:
+        # SQLite batch migrations recreate tables, so foreign keys must be off while they run.
+        engine = create_db_engine(_database_path(), foreign_keys=False)
     with engine.connect() as connection:
         context.configure(
             connection=connection,

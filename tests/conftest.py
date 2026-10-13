@@ -33,3 +33,16 @@ def session(factory: sessionmaker[Session]) -> Iterator[Session]:
     with factory() as session:
         yield session
         session.rollback()
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--run-live", action="store_true", help="run tests that call the real API")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("--run-live"):
+        return
+    skip = pytest.mark.skip(reason="live test: pass --run-live and set ANTHROPIC_API_KEY")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip)
