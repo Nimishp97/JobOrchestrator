@@ -5,9 +5,11 @@ description = "Autonomous job-application agent: source, score, tailor, dispatch
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.20.0",
     "pydantic>=2.14.1",
     "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.3",
+    "sqlalchemy>=2,<3",
     "tzdata>=2026.5",
 ]
 

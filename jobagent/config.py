@@ -69,12 +69,22 @@ class LLMConfig(_Strict):
     model: str = Field(min_length=1)
 
 
+class DatabaseConfig(_Strict):
+    path: Path = Path("data/jobagent.db")
+
+    @property
+    def resolved_path(self) -> Path:
+        """Absolute path; relative values are resolved against the project root."""
+        return self.path if self.path.is_absolute() else PROJECT_ROOT / self.path
+
+
 class AppConfig(_Strict):
     dry_run: StrictBool = True
     kill_switch: StrictBool = False
     score_threshold: int = Field(default=75, ge=0, le=100)
     caps: Caps = Caps()
     quiet_hours: QuietHours = QuietHours()
+    database: DatabaseConfig = DatabaseConfig()
     llm: LLMConfig
 
     @classmethod

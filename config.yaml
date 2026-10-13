@@ -15,5 +15,8 @@ quiet_hours:           # no dispatching in this window (may wrap midnight)
   end: "07:00"
   timezone: "UTC"      # IANA name, e.g. "Asia/Kolkata"
 
+database:
+  path: "data/jobagent.db"   # relative paths resolve against the project root
+
 llm:
   model: "claude-sonnet-5-5"   # change here when models are deprecated
